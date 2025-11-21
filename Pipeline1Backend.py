@@ -1,6 +1,8 @@
 import os
 import json
 import requests
+from typing import Any, Dict, List, Optional
+
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from google import genai
@@ -8,8 +10,7 @@ from google.genai import types
 import uvicorn
 from dotenv import load_dotenv
 
-# Load `.env` for local development so environment variables like
-# `GOOGLE_API_KEY` and `YELP_API_KEY` are available to the app.
+
 load_dotenv()
 
 GEMINI_API_KEY = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
@@ -23,7 +24,7 @@ if not YELP_API_KEY:
 
 client = genai.Client(api_key=GEMINI_API_KEY)
 
-app = FastAPI(title="Yelp AI Backend", version="1.0.0")
+app = FastAPI(title="Yelp AI Backend", version="1.1.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -33,7 +34,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-def _truncate_to_sentence(text, max_len=1000):
+
+def _truncate_to_sentence(text: str, max_len: int = 1000) -> str:
     text = (text or "").strip()
     if len(text) <= max_len:
         return text
@@ -44,52 +46,79 @@ def _truncate_to_sentence(text, max_len=1000):
     last_punc = max(last_period, last_excl, last_q)
     return truncated[: last_punc + 1] if last_punc != -1 else truncated
 
-def _build_prompt(Location, Date, Time):
+
+def _build_prompt(location: str, date: str, time: str) -> str:
     return (
-        "Create a single natural-language Yelp search query.\n"
-        f"Location: {Location}\n"
-        f"Date: {Date}\n"
-        f"Time: {Time}\n"
-        "Use the image content and the user's question to craft a clear, specific, natural first-person request.\n"
-        "Ask Yelp to return many relevant options and prioritize higher-rated, more popular places first.\n"
-        "Write one well-structured sentence describing what to find, where, and when.\n"
+        "Write exactly one Yelp search sentence.\n"
+        f"Location: {location}\n"
+        f"Date: {date}\n"
+        f"Time: {time}\n"
+        "Goal: find many relevant options, sorted by highest rating and review count.\n"
+        "Use the image details + user intent. Be concrete about the item and dietary constraints.\n"
         "Rules:\n"
-        "- Make the description from the image as specific as possible.\n"
-        "- Integrate the user's question naturally.\n"
-        "- Mention location, date, and time explicitly.\n"
-        "- Request multiple options ordered by rating and popularity.\n"
-        "- No explanations, no meta text, no references to prompts, APIs, or images.\n"
-        "- Output only the final query sentence.\n"
-        "- Keep it under 900 characters."
+        "- One sentence only.\n"
+        "- Mention location, date, time explicitly.\n"
+        "- Ask for many options ordered by rating/popularity.\n"
+        "- No meta, no mention of images/APIs/prompts.\n"
+        "- Under 900 chars."
     )
 
-def _gemini_to_yelp_query(image_bytes, mime_type, user_query, Location, Date, Time):
-    instruction = _build_prompt(Location, Date, Time)
+
+def _gemini_image_to_query(
+    image_bytes: bytes,
+    mime_type: str,
+    user_query: str,
+    location: str,
+    date: str,
+    time: str,
+) -> str:
+    instruction = _build_prompt(location, date, time)
     resp = client.models.generate_content(
         model="gemini-2.5-flash",
         contents=[
             types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
             instruction,
-            f"User question: {user_query}",
+            f"User intent: {user_query}",
         ],
     )
-    return _truncate_to_sentence(getattr(resp, "text", ""), 1000)
+    return _truncate_to_sentence(getattr(resp, "text", "") or "", 1000)
 
-def _call_yelp_ai(yelp_query):
+
+def _gemini_caption_to_query(
+    caption: str,
+    user_query: str,
+    location: str,
+    date: str,
+    time: str,
+) -> str:
+    instruction = _build_prompt(location, date, time)
+    resp = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=[
+            instruction,
+            f"Image caption: {caption}",
+            f"User intent: {user_query}",
+        ],
+    )
+    return _truncate_to_sentence(getattr(resp, "text", "") or "", 1000)
+
+
+def _call_yelp_ai(yelp_query: str) -> Dict[str, Any]:
     headers = {
         "Authorization": f"Bearer {YELP_API_KEY}",
         "Content-Type": "application/json",
         "Accept": "application/json",
     }
     payload = {"query": yelp_query}
-    r = requests.post(YELP_AI_ENDPOINT, headers=headers, json=payload, timeout=60)
+    r = requests.post(YELP_AI_ENDPOINT, headers=headers, json=payload, timeout=45)
     if r.status_code != 200:
         raise HTTPException(status_code=r.status_code, detail=r.text)
     return r.json()
 
-def _extract_results(data, yelp_query):
+
+def _extract_results(data: Dict[str, Any], yelp_query: str) -> Dict[str, Any]:
     ai_text = (data.get("response") or {}).get("text", "") or ""
-    results = {
+    results: Dict[str, Any] = {
         "chat_id": data.get("chat_id"),
         "query": yelp_query,
         "ai_response_text": ai_text,
@@ -111,13 +140,17 @@ def _extract_results(data, yelp_query):
             if not formatted_address:
                 parts = [loc.get("address1"), loc.get("address2"), loc.get("address3")]
                 city_parts = [loc.get("city"), loc.get("state"), loc.get("zip_code"), loc.get("country")]
-                formatted_address = ", ".join([p for p in parts if p] + [p for p in city_parts if p])
+                formatted_address = ", ".join([p for p in parts if p] + [p for p in city_parts if p]) or "N/A"
 
-            first_photo_url = photos[0].get("original_url") if photos and isinstance(photos[0], dict) else None
+            first_photo_url = (
+                photos[0].get("original_url")
+                if photos and isinstance(photos[0], dict)
+                else "N/A"
+            )
 
-            hours_list = []
+            hours_list: List[Dict[str, Any]] = []
             for h in business_hours:
-                day = h.get("day_of_week")
+                day = h.get("day_of_week") or "N/A"
                 slots = h.get("business_hours") or []
                 slot_strs = []
                 for s in slots:
@@ -127,14 +160,14 @@ def _extract_results(data, yelp_query):
                         slot_strs.append(f"{ot} to {ct}")
                 hours_list.append({"day_of_week": day, "hours": slot_strs})
 
-            opening_list = []
+            opening_list: List[Dict[str, Any]] = []
             for op in openings:
-                date_val = op.get("date")
+                date_val = op.get("date") or "N/A"
                 slots = op.get("slots") or []
                 slot_list = []
                 for sl in slots:
                     slot_list.append({
-                        "time": sl.get("time"),
+                        "time": sl.get("time") or "N/A",
                         "seating_areas": sl.get("seating_areas") or [],
                     })
                 opening_list.append({"date": date_val, "slots": slot_list})
@@ -142,22 +175,43 @@ def _extract_results(data, yelp_query):
             biz_out = {
                 "id": biz.get("id"),
                 "name": biz.get("name") or "N/A",
-                "address": formatted_address or "N/A",
+                "address": formatted_address,
                 "yelp_url": biz.get("url") or "N/A",
                 "rating": biz.get("rating") if biz.get("rating") is not None else "N/A",
                 "review_count": biz.get("review_count") if biz.get("review_count") is not None else "N/A",
                 "price": biz.get("price") or "N/A",
                 "latitude": coords.get("latitude") if coords.get("latitude") is not None else "N/A",
                 "longitude": coords.get("longitude") if coords.get("longitude") is not None else "N/A",
-                "short_summary": summaries.get("short") or (contextual.get("summary") if isinstance(contextual, dict) else None) or "N/A",
+                "short_summary": summaries.get("short")
+                    or (contextual.get("summary") if isinstance(contextual, dict) else None)
+                    or "N/A",
                 "business_hours": hours_list,
-                "photo_url": first_photo_url or "N/A",
+                "photo_url": first_photo_url,
                 "reservation_openings": opening_list,
             }
 
             results["businesses"].append(biz_out)
 
+    def _sort_key(b):
+        r = b["rating"]
+        rc = b["review_count"]
+        r_val = float(r) if isinstance(r, (int, float)) else -1.0
+        rc_val = int(rc) if isinstance(rc, int) else -1
+        return (r_val, rc_val)
+
+    results["businesses"].sort(key=_sort_key, reverse=True)
     return results
+
+
+@app.get("/")
+def root():
+    return {"status": "running", "docs": "/docs", "health": "/health"}
+
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
 
 @app.post("/search-image")
 async def search_image(
@@ -166,26 +220,71 @@ async def search_image(
     Location: str = Form("College Park, Maryland"),
     Date: str = Form("12/11/2025"),
     Time: str = Form("8pm"),
-    save_to_file: bool = Form(True),
+    save_to_file: bool = Form(False),
 ):
     try:
         image_bytes = await image.read()
         mime_type = image.content_type or "image/jpeg"
-        yelp_query = _gemini_to_yelp_query(image_bytes, mime_type, user_query, Location, Date, Time)
+
+        yelp_query = _gemini_image_to_query(
+            image_bytes=image_bytes,
+            mime_type=mime_type,
+            user_query=user_query,
+            location=Location,
+            date=Date,
+            time=Time,
+        )
+
         data = _call_yelp_ai(yelp_query)
         results = _extract_results(data, yelp_query)
+
         if save_to_file:
             with open("search_results.json", "w", encoding="utf-8") as f:
                 json.dump(results, f, ensure_ascii=False, indent=2)
+
         return results
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/health")
-def health():
-    return {"status": "ok"}
+
+@app.post("/search-caption")
+async def search_caption(
+    caption: str = Form(...),
+    user_query: str = Form(...),
+    Location: str = Form("College Park, Maryland"),
+    Date: str = Form("12/11/2025"),
+    Time: str = Form("8pm"),
+    save_to_file: bool = Form(False),
+):
+    try:
+        yelp_query = _gemini_caption_to_query(
+            caption=caption,
+            user_query=user_query,
+            location=Location,
+            date=Date,
+            time=Time,
+        )
+
+        data = _call_yelp_ai(yelp_query)
+        results = _extract_results(data, yelp_query)
+
+        if save_to_file:
+            with open("search_results.json", "w", encoding="utf-8") as f:
+                json.dump(results, f, ensure_ascii=False, indent=2)
+
+        return results
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", "8000")))
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=int(os.environ.get("PORT", "8000")),
+        log_level="info",
+    )
