@@ -135,6 +135,7 @@ def _extract_results(data: Dict[str, Any], yelp_query: str) -> Dict[str, Any]:
             photos = contextual.get("photos") or []
             business_hours = contextual.get("business_hours") or []
             openings = (biz.get("reservation_availability") or {}).get("openings") or []
+            phone = biz.get("phone") or "N/A"
 
             formatted_address = loc.get("formatted_address")
             if not formatted_address:
@@ -188,6 +189,7 @@ def _extract_results(data: Dict[str, Any], yelp_query: str) -> Dict[str, Any]:
                 "business_hours": hours_list,
                 "photo_url": first_photo_url,
                 "reservation_openings": opening_list,
+                "phone": phone,
             }
 
             results["businesses"].append(biz_out)
