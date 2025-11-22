@@ -1,16 +1,16 @@
-# Pipeline2Backend.py
+# Pipeline2Backend.py (updated)
+
 import os
 import re
-import json
 import requests
 from urllib.parse import urlparse
+from typing import Optional, Union, Any, Dict
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Body
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from google import genai
-from google.genai import types
 from dotenv import load_dotenv
 
 # ---------------------------
@@ -30,31 +30,30 @@ if not YELP_API_KEY:
 llm_client = genai.Client(api_key=GEMINI_API_KEY)
 
 YELP_BUSINESS_ENDPOINT = "https://api.yelp.com/v3/businesses/{business_id_or_alias}"
-YELP_REVIEWS_ENDPOINT = "https://api.yelp.com/v3/businesses/{business_id_or_alias}/reviews"
+YELP_REVIEWS_ENDPOINT  = "https://api.yelp.com/v3/businesses/{business_id_or_alias}/reviews"
 
 
 # ---------------------------
 # FastAPI app
 # ---------------------------
-app = FastAPI(title="Yelp Pipeline 2 Backend", version="1.1.0")
+app = FastAPI(title="Yelp Pipeline 2 Backend", version="1.2.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # tighten in production if needed
+    allow_origins=["*"],  # tighten in production
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # ---------------------------
-# Prompts (updated)
+# Prompts
 # ---------------------------
-
 OPTIMIST_SYS = """
 You are the Optimistic Agent. You receive context about a restaurant or hotel and several review snippets.
 Focus on strengths, recurring positives, and reasons a typical guest might enjoy the place.
 Highlight food quality, friendly/efficient service, value, vibe, convenience, and reliability.
-Do not mention reviews or that you are an agent. Speak naturally.
+Do not mention reviews or that you are an agent.
 Write 2–4 concise sentences.
 """.strip()
 
@@ -62,11 +61,10 @@ CRITIC_SYS = """
 You are the Critical Agent. You receive context about a restaurant or hotel and several review snippets.
 Focus on weaknesses, recurring complaints, risks, and situations where a guest could be disappointed.
 Highlight inconsistent food, slow/rude service, cleanliness problems, cramped/noisy space, and poor value.
-Do not mention reviews or that you are an agent. Speak naturally.
+Do not mention reviews or that you are an agent.
 Write 2–4 concise sentences.
 """.strip()
 
-# Judge now produces ONE unbiased verdict paragraph (no 3-line format).
 JUDGE_SYS = """
 You are the Judge Agent. You receive the business context plus an Optimistic analysis and a Critical analysis.
 Weigh both sides fairly and produce a practical, unbiased verdict for a first-time visitor.
@@ -85,13 +83,15 @@ Constraints:
 
 
 # ---------------------------
-# Request/Response schemas
+# Request schema (JSON option)
 # ---------------------------
 class AnalyzeRequest(BaseModel):
     business_url: str = Field(..., description="Full Yelp business URL pasted by user")
-    reviews_limit: int = Field(6, ge=1, le=20, description="How many Fusion reviews to request")
-    ai_fallback: bool = Field(True, description="If Fusion reviews fail, use Yelp AI summary text")
-    locale: str | None = Field(None, description="Optional Yelp locale, e.g., en_US")
+    reviews_limit: int = Field(6, ge=1, le=20)
+    ai_fallback: bool = True
+    locale: Optional[str] = None
+
+    model_config = {"extra": "ignore"}  # allow minimal JSON
 
 
 # ---------------------------
@@ -108,22 +108,15 @@ def run_agent(system_prompt: str, content: str) -> str:
     return (getattr(resp, "text", "") or "").strip()
 
 def extract_business_id_or_alias_from_url(business_url: str) -> str:
-    """
-    Accepts URLs like:
-      https://www.yelp.com/biz/college-park-diner-college-park
-      https://www.yelp.com/biz/college-park-diner-college-park?foo=bar
-    Returns the alias segment after /biz/
-    """
-    parsed = urlparse(business_url)
+    parsed = urlparse(business_url.strip())
     parts = [p for p in parsed.path.split("/") if p]
     if len(parts) >= 2 and parts[0] == "biz":
         return parts[1]
-    # also allow user to paste just alias/id
-    if re.match(r"^[A-Za-z0-9\-_]+$", business_url):
-        return business_url
+    if re.match(r"^[A-Za-z0-9\-_]+$", business_url.strip()):
+        return business_url.strip()
     raise ValueError("Could not extract business alias/id from URL")
 
-def get_business_details(business_id_or_alias: str, locale: str | None = None) -> dict:
+def get_business_details(business_id_or_alias: str, locale: Optional[str] = None) -> dict:
     url = YELP_BUSINESS_ENDPOINT.format(business_id_or_alias=business_id_or_alias)
     params = {"locale": locale} if locale else None
     r = requests.get(url, headers=_yelp_headers(), params=params, timeout=30)
@@ -131,21 +124,21 @@ def get_business_details(business_id_or_alias: str, locale: str | None = None) -
     return r.json()
 
 def get_business_reviews_from_fusion(
-    business_id_or_alias: str, limit: int = 6, locale: str | None = None
-) -> list[dict]:
+    business_id_or_alias: str, limit: int = 6, locale: Optional[str] = None
+) -> list:
     url = YELP_REVIEWS_ENDPOINT.format(business_id_or_alias=business_id_or_alias)
     params = {"limit": limit, "sort_by": "yelp_sort"}
     if locale:
         params["locale"] = locale
+
     r = requests.get(url, headers=_yelp_headers(), params=params, timeout=30)
+
+    # If Fusion reviews are not permitted on plan, treat as empty.
     if r.status_code != 200:
         return []
     return (r.json() or {}).get("reviews", []) or []
 
 def get_review_snippets_from_yelp_ai(business_name: str, city: str, state: str) -> str:
-    """
-    Uses Yelp AI to get typical pros/cons when Fusion reviews aren't accessible.
-    """
     location_str = ", ".join([p for p in [city, state] if p])
     query = (
         f"For {business_name} in {location_str}, summarize typical guest experiences "
@@ -159,7 +152,13 @@ def get_review_snippets_from_yelp_ai(business_name: str, city: str, state: str) 
         "Accept": "application/json",
     }
     r = requests.post(YELP_AI_ENDPOINT, headers=headers, json=payload, timeout=40)
-    r.raise_for_status()
+
+    if r.status_code != 200:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Yelp AI fallback failed ({r.status_code}): {r.text[:300]}"
+        )
+
     return ((r.json() or {}).get("response") or {}).get("text", "") or ""
 
 def normalize_business_payload(business: dict) -> dict:
@@ -189,7 +188,7 @@ def normalize_business_payload(business: dict) -> dict:
         "review_count": business.get("review_count") if business.get("review_count") is not None else "N/A",
     }
 
-def build_context_from_reviews(business: dict, reviews: list[dict]) -> str:
+def build_context_from_reviews(business: dict, reviews: list) -> str:
     b = normalize_business_payload(business)
     context = f"""
 Business:
@@ -211,7 +210,7 @@ Representative review snippets:
 
 def build_context_from_ai_summary(business: dict, ai_summary: str) -> str:
     b = normalize_business_payload(business)
-    context = f"""
+    return f"""
 Business:
 Name: {b['name']}
 Rating: {b['rating']}
@@ -222,23 +221,27 @@ Address: {b['address']}
 AI summary of typical positives/negatives:
 {ai_summary.strip()}
 """.strip()
-    return context
 
-def run_multi_agent_debate(context: str) -> tuple[str, str, str]:
-    p_text = run_agent(OPTIMIST_SYS, context)
-    n_text = run_agent(CRITIC_SYS, context)
-
+def run_multi_agent_debate(context: str):
+    P = run_agent(OPTIMIST_SYS, context)
+    N = run_agent(CRITIC_SYS, context)
     judge_input = f"""{context}
 
 Optimistic analysis:
-{p_text}
+{P}
 
 Critical analysis:
-{n_text}
+{N}
 """.strip()
+    J = run_agent(JUDGE_SYS, judge_input)
+    return P, N, J
 
-    j_text = run_agent(JUDGE_SYS, judge_input)
-    return p_text, n_text, j_text
+def parse_request(payload: Union[str, Dict[str, Any]]) -> AnalyzeRequest:
+    # If user sends raw string body, convert to AnalyzeRequest
+    if isinstance(payload, str):
+        return AnalyzeRequest(business_url=payload.strip())
+    # If user sends JSON, validate
+    return AnalyzeRequest(**payload)
 
 
 # ---------------------------
@@ -251,6 +254,7 @@ def root():
         "docs": "/docs",
         "health": "/health",
         "endpoint": "/analyze-business",
+        "body": "Send JSON {business_url: <url>} or raw text body with url"
     }
 
 @app.get("/health")
@@ -258,50 +262,68 @@ def health():
     return {"status": "ok"}
 
 @app.post("/analyze-business")
-def analyze_business(req: AnalyzeRequest):
+def analyze_business(
+    payload: Union[str, Dict[str, Any]] = Body(..., description="JSON or raw Yelp URL")
+):
+    # 1) Parse body robustly
+    try:
+        req = parse_request(payload)
+    except ValidationError as e:
+        raise HTTPException(status_code=422, detail=e.errors())
+
+    # 2) Extract alias/id
     try:
         business_id_or_alias = extract_business_id_or_alias_from_url(req.business_url)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+    # 3) Fetch business details
     try:
         business = get_business_details(business_id_or_alias, locale=req.locale)
     except requests.HTTPError as e:
-        raise HTTPException(status_code=502, detail=f"Failed to fetch business details: {e}")
+        raise HTTPException(status_code=502, detail=f"Business details fetch failed: {e}")
 
-    reviews = get_business_reviews_from_fusion(
-        business_id_or_alias, limit=req.reviews_limit, locale=req.locale
-    )
+    # 4) Try Fusion reviews (soft fail)
+    reviews = []
+    try:
+        reviews = get_business_reviews_from_fusion(
+            business_id_or_alias, limit=req.reviews_limit, locale=req.locale
+        )
+    except Exception:
+        reviews = []
 
+    # 5) Build context
     context_source = "fusion_reviews"
     if reviews:
         context = build_context_from_reviews(business, reviews)
     else:
         if not req.ai_fallback:
-            raise HTTPException(status_code=404, detail="No Fusion reviews available and ai_fallback=False")
+            raise HTTPException(status_code=404, detail="Fusion reviews unavailable and ai_fallback=False")
         loc = business.get("location") or {}
         ai_summary = get_review_snippets_from_yelp_ai(
-            business.get("name", ""), loc.get("city", ""), loc.get("state", "")
+            business.get("name", ""),
+            loc.get("city", ""),
+            loc.get("state", "")
         )
         context = build_context_from_ai_summary(business, ai_summary)
         context_source = "yelp_ai_summary"
 
-    P, N, J = run_multi_agent_debate(context)
+    # 6) Multi-agent debate
+    try:
+        P, N, J = run_multi_agent_debate(context)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Gemini debate failed: {str(e)[:300]}")
 
-    out = {
+    return {
         "business_id": business_id_or_alias,
         "business": normalize_business_payload(business),
         "context_source": context_source,
-        "P": P,  # optimistic agent output
-        "N": N,  # critical agent output
-        "J": J,  # single unbiased verdict paragraph based on both
+        "P": P,
+        "N": N,
+        "J": J
     }
-    return out
 
 
-# ---------------------------
-# Local run
-# ---------------------------
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", "8000")))
