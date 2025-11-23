@@ -94,7 +94,6 @@ def _gemini_image_to_query(
 
 
 def _gemini_caption_to_query(
-    caption: str,
     user_query: str,
     location: str,
     latitude: str,
@@ -107,7 +106,6 @@ def _gemini_caption_to_query(
         model="gemini-2.5-flash",
         contents=[
             instruction,
-            f"Image caption: {caption}",
             f"User intent: {user_query}",
         ],
     )
@@ -267,7 +265,6 @@ async def search_image(
 
 @app.post("/search-caption")
 async def search_caption(
-    caption: str = Form(...),
     user_query: str = Form(...),
     Location: str = Form(""),
     Latitude: str = Form(""),
@@ -278,7 +275,6 @@ async def search_caption(
 ):
     try:
         yelp_query = _gemini_caption_to_query(
-            caption=caption,
             user_query=user_query,
             location=Location,
             latitude=Latitude,
@@ -308,4 +304,5 @@ if __name__ == "__main__":
         port=int(os.environ.get("PORT", "8000")),
         log_level="info",
     )
+
 
