@@ -1,4 +1,5 @@
-# Pipeline2Backend.py (rewritten to return point lists per agent)
+# Pipeline2Backend.py
+# Fixes: enforce consistent point-list outputs for P/N/J and robustly parse JSON arrays.
 
 import os
 import re
@@ -37,7 +38,7 @@ YELP_REVIEWS_ENDPOINT  = "https://api.yelp.com/v3/businesses/{business_id_or_ali
 # ---------------------------
 # FastAPI app
 # ---------------------------
-app = FastAPI(title="Yelp Pipeline 2 Backend", version="1.3.0")
+app = FastAPI(title="Yelp Pipeline 2 Backend", version="1.4.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -106,47 +107,114 @@ def _yelp_headers():
     return {"Authorization": f"Bearer {YELP_API_KEY}", "accept": "application/json"}
 
 def run_agent(system_prompt: str, content: str) -> str:
-    resp = llm_client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=[system_prompt, content],
-    )
+    """
+    Calls Gemini. Tries to request JSON output type when supported.
+    """
+    try:
+        # Some versions of google-genai support generation_config / response_mime_type.
+        resp = llm_client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=[system_prompt, content],
+            config={"response_mime_type": "application/json"},
+        )
+    except TypeError:
+        # Fallback for older SDKs
+        resp = llm_client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=[system_prompt, content],
+        )
+
     return (getattr(resp, "text", "") or "").strip()
 
-def _safe_points_parse(text: str, min_items: int = 2, max_items: int = 8) -> List[str]:
+_CODE_FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE | re.MULTILINE)
+
+def _strip_code_fences(text: str) -> str:
+    return _CODE_FENCE_RE.sub("", text.strip())
+
+def _extract_json_array_substring(text: str) -> Optional[str]:
     """
-    Expect JSON array of strings.
-    If model drifts, fall back to splitting lines/bullets.
+    Find the first '[' and last ']' and return that substring if plausible.
+    """
+    start = text.find("[")
+    end = text.rfind("]")
+    if start != -1 and end != -1 and end > start:
+        return text[start:end + 1]
+    return None
+
+def _sanitize_points(points: List[str], max_items: int) -> List[str]:
+    cleaned: List[str] = []
+    for p in points:
+        if p is None:
+            continue
+        s = str(p).strip()
+
+        # Remove standalone bracket artifacts.
+        if s in {"[", "]"}:
+            continue
+
+        # Trim trailing commas and surrounding quotes.
+        s = s.strip().strip(",")
+        if (s.startswith('"') and s.endswith('"')) or (s.startswith("'") and s.endswith("'")):
+            s = s[1:-1].strip()
+
+        # Drop empties again.
+        if s:
+            cleaned.append(s)
+
+    return cleaned[:max_items]
+
+def safe_points_parse(text: str, min_items: int = 2, max_items: int = 8) -> List[str]:
+    """
+    Robustly parse an LLM response into a list of strings.
+
+    Order:
+    1) strict JSON loads (whole text)
+    2) JSON loads of extracted array substring
+    3) line/bullet splitting fallback
     """
     if not text:
         return []
 
-    # First try strict JSON
+    cleaned = _strip_code_fences(text)
+
+    # 1) Strict JSON on full text
     try:
-        data = json.loads(text)
+        data = json.loads(cleaned)
         if isinstance(data, list):
-            pts = [str(x).strip() for x in data if str(x).strip()]
+            pts = _sanitize_points([str(x) for x in data], max_items)
             if pts:
-                return pts[:max_items]
+                return pts
     except Exception:
         pass
 
-    # Fallback: strip code fences, split bullets/newlines
-    cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip(), flags=re.IGNORECASE | re.MULTILINE)
+    # 2) Try parsing an embedded JSON array substring
+    arr_sub = _extract_json_array_substring(cleaned)
+    if arr_sub:
+        try:
+            data = json.loads(arr_sub)
+            if isinstance(data, list):
+                pts = _sanitize_points([str(x) for x in data], max_items)
+                if pts:
+                    return pts
+        except Exception:
+            pass
+
+    # 3) Fallback: split bullets/newlines/semicolons
     lines = re.split(r"(?:\r?\n)+", cleaned)
-    pts = []
+    pts: List[str] = []
     for ln in lines:
         ln = ln.strip()
         ln = re.sub(r"^[-•\d\)\.]+\s*", "", ln)  # remove bullets/numbers
-        if ln:
+        if ln and ln not in {"[", "]"}:
             pts.append(ln)
-    # Last resort: split on semicolons
+
     if not pts and ";" in cleaned:
         pts = [p.strip() for p in cleaned.split(";") if p.strip()]
 
-    # Ensure some sanity
-    if len(pts) < min_items:
-        return pts
-    return pts[:max_items]
+    pts = _sanitize_points(pts, max_items)
+
+    # If still tiny, return what we have (don't invent)
+    return pts if len(pts) >= min_items else pts
 
 def extract_business_id_or_alias_from_url(business_url: str) -> str:
     parsed = urlparse(business_url.strip())
@@ -265,30 +333,28 @@ AI summary of typical positives/negatives:
 
 def run_multi_agent_debate(context: str):
     P_raw = run_agent(OPTIMIST_SYS, context)
-    N_raw = run_agent(CRITIC_SYS,  context)
+    N_raw = run_agent(CRITIC_SYS, context)
 
-    P = _safe_points_parse(P_raw, min_items=3)
-    N = _safe_points_parse(N_raw, min_items=3)
+    P = safe_points_parse(P_raw, min_items=3, max_items=6)
+    N = safe_points_parse(N_raw, min_items=3, max_items=6)
 
     judge_input = f"""{context}
 
-Optimistic analysis (points):
+Optimistic analysis (points JSON):
 {json.dumps(P, ensure_ascii=False)}
 
-Critical analysis (points):
+Critical analysis (points JSON):
 {json.dumps(N, ensure_ascii=False)}
 """.strip()
 
     J_raw = run_agent(JUDGE_SYS, judge_input)
-    J = _safe_points_parse(J_raw, min_items=2)
+    J = safe_points_parse(J_raw, min_items=2, max_items=4)
 
     return P, N, J
 
 def parse_request(payload: Union[str, Dict[str, Any]]) -> AnalyzeRequest:
-    # If user sends raw string body, convert to AnalyzeRequest
     if isinstance(payload, str):
         return AnalyzeRequest(business_url=payload.strip())
-    # If user sends JSON, validate
     return AnalyzeRequest(**payload)
 
 
@@ -332,7 +398,6 @@ def analyze_business(
         raise HTTPException(status_code=502, detail=f"Business details fetch failed: {e}")
 
     # 4) Try Fusion reviews (soft fail)
-    reviews = []
     try:
         reviews = get_business_reviews_from_fusion(
             business_id_or_alias, limit=req.reviews_limit, locale=req.locale
@@ -366,9 +431,9 @@ def analyze_business(
         "business_id": business_id_or_alias,
         "business": normalize_business_payload(business),
         "context_source": context_source,
-        "P": P,  # list of points
-        "N": N,  # list of points
-        "J": J,  # list of points
+        "P": P,  # always list[str]
+        "N": N,  # always list[str]
+        "J": J,  # always list[str]
     }
 
 
