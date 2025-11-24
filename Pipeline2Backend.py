@@ -1,12 +1,14 @@
 # Pipeline2Backend.py
-# Fixes: enforce consistent point-list outputs for P/N/J and robustly parse JSON arrays.
+# Parallel P/N + stronger judge prompt.
 
 import os
 import re
 import json
 import requests
 from urllib.parse import urlparse
-from typing import Optional, Union, Any, Dict, List
+from typing import Optional, Union, Any, Dict, List, Tuple
+from itertools import cycle
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from fastapi import FastAPI, HTTPException, Body
 from fastapi.middleware.cors import CORSMiddleware
@@ -20,16 +22,34 @@ from dotenv import load_dotenv
 # ---------------------------
 load_dotenv()
 
-GEMINI_API_KEY = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
+# Allow 1+ Gemini keys, separated by commas.
+# Example: GEMINI_API_KEYS="key1,key2"
+GEMINI_API_KEYS_RAW = (
+    os.environ.get("GEMINI_API_KEYS")
+    or os.environ.get("GOOGLE_API_KEYS")
+    or os.environ.get("GOOGLE_API_KEY")
+    or os.environ.get("GEMINI_API_KEY")
+)
+
 YELP_API_KEY = os.environ.get("YELP_API_KEY")
 YELP_AI_ENDPOINT = os.environ.get("YELP_AI_ENDPOINT", "https://api.yelp.com/ai/chat/v2")
 
-if not GEMINI_API_KEY:
-    raise RuntimeError("Missing GOOGLE_API_KEY or GEMINI_API_KEY in environment")
+if not GEMINI_API_KEYS_RAW:
+    raise RuntimeError("Missing GOOGLE_API_KEY / GEMINI_API_KEY (or GEMINI_API_KEYS)")
 if not YELP_API_KEY:
     raise RuntimeError("Missing YELP_API_KEY in environment")
 
-llm_client = genai.Client(api_key=GEMINI_API_KEY)
+# Build one or more Gemini clients.
+GEMINI_KEYS = [k.strip() for k in GEMINI_API_KEYS_RAW.split(",") if k.strip()]
+if not GEMINI_KEYS:
+    raise RuntimeError("No valid Gemini keys found after parsing")
+
+_GEMINI_CLIENTS = [genai.Client(api_key=k) for k in GEMINI_KEYS]
+_client_cycle = cycle(_GEMINI_CLIENTS)
+
+def _next_llm_client() -> genai.Client:
+    # Round-robin across keys/clients (thread-safe enough for this simple use).
+    return next(_client_cycle)
 
 YELP_BUSINESS_ENDPOINT = "https://api.yelp.com/v3/businesses/{business_id_or_alias}"
 YELP_REVIEWS_ENDPOINT  = "https://api.yelp.com/v3/businesses/{business_id_or_alias}/reviews"
@@ -38,7 +58,7 @@ YELP_REVIEWS_ENDPOINT  = "https://api.yelp.com/v3/businesses/{business_id_or_ali
 # ---------------------------
 # FastAPI app
 # ---------------------------
-app = FastAPI(title="Yelp Pipeline 2 Backend", version="1.4.0")
+app = FastAPI(title="Yelp Pipeline 2 Backend", version="1.5.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -71,20 +91,32 @@ Output ONLY a valid JSON array of short points (strings), 3–6 items.
 Example: ["Long waits", "Inconsistent dishes", "Noisy dining room"]
 """.strip()
 
+# Stronger, more decisive judge.
 JUDGE_SYS = """
 You are the Judge Agent. You receive the business context plus an Optimistic analysis and a Critical analysis.
-Weigh both sides fairly and produce a practical, unbiased verdict for a first-time visitor.
+
+Your job is NOT to split the difference. You must decide an overall lean based on evidence:
+- If positives clearly outweigh negatives, lean positive.
+- If negatives clearly outweigh positives, lean negative.
+- Only say "mixed" if the evidence is genuinely balanced.
 
 Output ONLY a valid JSON array of short points (strings), 2–4 items:
-- overall balance
-- who it suits / best use-case
-- key caution (if any)
+1) Net verdict with lean (positive / negative / mixed) in plain words.
+2) Who it suits / best use-case.
+3) Key caution or tip (only if meaningful).
 
 Constraints:
-- Base judgment only on provided context and the two analyses.
-- Do not invent statistics or exact prices/wait times.
+- Use ONLY provided context and the two analyses.
+- Do not invent statistics, prices, or exact wait times.
 - Do not mention Yelp, reviews, or agents.
-Example: ["Mostly solid with a few consistency hiccups", "Best for casual diners who like lively rooms", "Go off-peak to avoid waits"]
+- Be concrete and practical; no hedging filler.
+
+Example:
+[
+  "Leans positive overall: strong food and vibe with only minor service hiccups.",
+  "Best for friends’ dinners or dates who want a lively setting.",
+  "Go earlier on weekends to avoid the busiest rush."
+]
 """.strip()
 
 
@@ -108,17 +140,16 @@ def _yelp_headers():
 
 def run_agent(system_prompt: str, content: str) -> str:
     """
-    Calls Gemini. Tries to request JSON output type when supported.
+    Calls Gemini. Uses round-robin client(s). Parallel-safe.
     """
+    llm_client = _next_llm_client()
     try:
-        # Some versions of google-genai support generation_config / response_mime_type.
         resp = llm_client.models.generate_content(
             model="gemini-2.5-flash",
             contents=[system_prompt, content],
             config={"response_mime_type": "application/json"},
         )
     except TypeError:
-        # Fallback for older SDKs
         resp = llm_client.models.generate_content(
             model="gemini-2.5-flash",
             contents=[system_prompt, content],
@@ -132,9 +163,6 @@ def _strip_code_fences(text: str) -> str:
     return _CODE_FENCE_RE.sub("", text.strip())
 
 def _extract_json_array_substring(text: str) -> Optional[str]:
-    """
-    Find the first '[' and last ']' and return that substring if plausible.
-    """
     start = text.find("[")
     end = text.rfind("]")
     if start != -1 and end != -1 and end > start:
@@ -147,37 +175,21 @@ def _sanitize_points(points: List[str], max_items: int) -> List[str]:
         if p is None:
             continue
         s = str(p).strip()
-
-        # Remove standalone bracket artifacts.
         if s in {"[", "]"}:
             continue
-
-        # Trim trailing commas and surrounding quotes.
         s = s.strip().strip(",")
         if (s.startswith('"') and s.endswith('"')) or (s.startswith("'") and s.endswith("'")):
             s = s[1:-1].strip()
-
-        # Drop empties again.
         if s:
             cleaned.append(s)
-
     return cleaned[:max_items]
 
 def safe_points_parse(text: str, min_items: int = 2, max_items: int = 8) -> List[str]:
-    """
-    Robustly parse an LLM response into a list of strings.
-
-    Order:
-    1) strict JSON loads (whole text)
-    2) JSON loads of extracted array substring
-    3) line/bullet splitting fallback
-    """
     if not text:
         return []
-
     cleaned = _strip_code_fences(text)
 
-    # 1) Strict JSON on full text
+    # 1) strict JSON
     try:
         data = json.loads(cleaned)
         if isinstance(data, list):
@@ -187,7 +199,7 @@ def safe_points_parse(text: str, min_items: int = 2, max_items: int = 8) -> List
     except Exception:
         pass
 
-    # 2) Try parsing an embedded JSON array substring
+    # 2) embedded JSON array substring
     arr_sub = _extract_json_array_substring(cleaned)
     if arr_sub:
         try:
@@ -199,12 +211,12 @@ def safe_points_parse(text: str, min_items: int = 2, max_items: int = 8) -> List
         except Exception:
             pass
 
-    # 3) Fallback: split bullets/newlines/semicolons
+    # 3) fallback split
     lines = re.split(r"(?:\r?\n)+", cleaned)
     pts: List[str] = []
     for ln in lines:
         ln = ln.strip()
-        ln = re.sub(r"^[-•\d\)\.]+\s*", "", ln)  # remove bullets/numbers
+        ln = re.sub(r"^[-•\d\)\.]+\s*", "", ln)
         if ln and ln not in {"[", "]"}:
             pts.append(ln)
 
@@ -212,8 +224,6 @@ def safe_points_parse(text: str, min_items: int = 2, max_items: int = 8) -> List
         pts = [p.strip() for p in cleaned.split(";") if p.strip()]
 
     pts = _sanitize_points(pts, max_items)
-
-    # If still tiny, return what we have (don't invent)
     return pts if len(pts) >= min_items else pts
 
 def extract_business_id_or_alias_from_url(business_url: str) -> str:
@@ -241,8 +251,6 @@ def get_business_reviews_from_fusion(
         params["locale"] = locale
 
     r = requests.get(url, headers=_yelp_headers(), params=params, timeout=30)
-
-    # If Fusion reviews are not permitted on plan, treat as empty.
     if r.status_code != 200:
         return []
     return (r.json() or {}).get("reviews", []) or []
@@ -267,7 +275,6 @@ def get_review_snippets_from_yelp_ai(business_name: str, city: str, state: str) 
             status_code=502,
             detail=f"Yelp AI fallback failed ({r.status_code}): {r.text[:300]}"
         )
-
     return ((r.json() or {}).get("response") or {}).get("text", "") or ""
 
 def normalize_business_payload(business: dict) -> dict:
@@ -331,9 +338,27 @@ AI summary of typical positives/negatives:
 {ai_summary.strip()}
 """.strip()
 
-def run_multi_agent_debate(context: str):
-    P_raw = run_agent(OPTIMIST_SYS, context)
-    N_raw = run_agent(CRITIC_SYS, context)
+def run_multi_agent_debate(context: str) -> Tuple[List[str], List[str], List[str]]:
+    """
+    Runs Optimist and Critic in parallel threads, then Judge.
+    """
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        futures = {
+            ex.submit(run_agent, OPTIMIST_SYS, context): "P",
+            ex.submit(run_agent, CRITIC_SYS, context): "N",
+        }
+
+        P_raw = N_raw = ""
+        for fut in as_completed(futures):
+            label = futures[fut]
+            try:
+                val = fut.result()
+            except Exception as e:
+                val = ""
+            if label == "P":
+                P_raw = val
+            else:
+                N_raw = val
 
     P = safe_points_parse(P_raw, min_items=3, max_items=6)
     N = safe_points_parse(N_raw, min_items=3, max_items=6)
@@ -345,6 +370,9 @@ Optimistic analysis (points JSON):
 
 Critical analysis (points JSON):
 {json.dumps(N, ensure_ascii=False)}
+
+Counts:
+positives={len(P)} negatives={len(N)}
 """.strip()
 
     J_raw = run_agent(JUDGE_SYS, judge_input)
@@ -421,7 +449,7 @@ def analyze_business(
         context = build_context_from_ai_summary(business, ai_summary)
         context_source = "yelp_ai_summary"
 
-    # 6) Multi-agent debate
+    # 6) Multi-agent debate (P/N parallel)
     try:
         P, N, J = run_multi_agent_debate(context)
     except Exception as e:
@@ -431,9 +459,9 @@ def analyze_business(
         "business_id": business_id_or_alias,
         "business": normalize_business_payload(business),
         "context_source": context_source,
-        "P": P,  # always list[str]
-        "N": N,  # always list[str]
-        "J": J,  # always list[str]
+        "P": P,
+        "N": N,
+        "J": J,
     }
 
 
