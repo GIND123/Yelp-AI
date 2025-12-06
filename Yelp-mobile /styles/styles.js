@@ -3,7 +3,7 @@ import { StyleSheet, Platform } from 'react-native';
 
 export const COLORS = {
   // === Base Palette (Shared) ===
-  primary: '#4CAF50', // Main Green
+  primary: '#D1252A', // Main Green
   backgroundLight: '#F9F9F9',
   textLight: '#1F2937', // Dark Gray/Black for headings
   textSecondary: '#6B7280', // Gray for subtitles
@@ -167,21 +167,40 @@ export const styles = StyleSheet.create({
     borderRadius: 12,
     marginBottom: 16,
     gap: 16,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 2,
-    elevation: 2,
   },
   restaurantCardSelected: {
-    backgroundColor: 'rgba(76, 175, 80, 0.1)', // Primary 10% opacity
-    borderWidth: 1,
+    backgroundColor: 'rgba(76, 175, 80, 0.08)', // Primary 8% opacity
+    borderWidth: 2,
     borderColor: COLORS.primary,
+    // iOS shadow
+    ...Platform.select({
+      ios: {
+        shadowColor: COLORS.primary,
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.15,
+        shadowRadius: 4,
+      },
+      android: {
+        elevation: 0, // Remove elevation on Android to avoid dark shadow
+      },
+    }),
   },
   restaurantCardUnselected: {
     backgroundColor: COLORS.surfaceLight,
     borderWidth: 1,
-    borderColor: 'transparent',
+    borderColor: '#E5E7EB',
+    // iOS shadow
+    ...Platform.select({
+      ios: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 1 },
+        shadowOpacity: 0.05,
+        shadowRadius: 2,
+      },
+      android: {
+        elevation: 0, // Remove elevation on Android
+      },
+    }),
   },
   restaurantThumbnail: {
     width: 64,

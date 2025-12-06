@@ -24,7 +24,7 @@ export default function ChooseRestaurantScreen() {
 
   async function onConfirmRestaurant() {
     try {
-      let selectedBusiness = business.filter((item) => item.id === selectedId);
+      let selectedBusiness = business?.filter((item) => item.id === selectedId);
       setIsLoading(true);
       const details = await getRestaurantDetails(selectedBusiness[0].yelp_url);
       setIsLoading(false);
@@ -46,18 +46,34 @@ export default function ChooseRestaurantScreen() {
 
     return (
       <TouchableOpacity
-        activeOpacity={0.9}
+        activeOpacity={0.7}
         onPress={() => setSelectedId(item.id)}
         style={[
-          styles.restaurantCard, // Updated Name
-          isSelected ? styles.restaurantCardSelected : styles.restaurantCardUnselected, // Updated Names
+          styles.restaurantCard,
+          isSelected ? styles.restaurantCardSelected : styles.restaurantCardUnselected,
         ]}>
         {/* Left: Image */}
-        <Image source={{ uri: item.photo_url }} style={styles.restaurantThumbnail} />
+        <Image
+          source={{ uri: item.photo_url }}
+          style={[
+            styles.restaurantThumbnail,
+            isSelected && {
+              borderWidth: 2,
+              borderColor: COLORS.primary,
+            },
+          ]}
+        />
 
         {/* Middle: Info */}
         <View style={{ flex: 1 }}>
-          <Text style={styles.restaurantName}>{item.name}</Text>
+          <Text
+            style={[
+              styles.restaurantName,
+              isSelected && { color: COLORS.primary },
+            ]}
+            numberOfLines={1}>
+            {item.name}
+          </Text>
           <Text style={styles.cuisineText}>{item.price}</Text>
 
           <View style={styles.metaRow}>
@@ -66,15 +82,17 @@ export default function ChooseRestaurantScreen() {
               <Text style={styles.ratingText}>{item.rating}</Text>
             </View>
             <Text style={{ color: '#D1D5DB', marginRight: 8 }}>•</Text>
-            <Text style={styles.metaText}>{item.distance}</Text>
+            <Text style={styles.metaText} numberOfLines={1}>
+              {item.distance}
+            </Text>
           </View>
         </View>
 
         {/* Right: Selection Indicator */}
         <View
           style={[
-            styles.selectionRadio, // Updated Name
-            isSelected ? styles.selectionRadioSelected : styles.selectionRadioUnselected, // Updated Names
+            styles.selectionRadio,
+            isSelected ? styles.selectionRadioSelected : styles.selectionRadioUnselected,
           ]}>
           {isSelected && <MaterialIcons name="check" size={20} color="#FFF" />}
         </View>
@@ -84,8 +102,8 @@ export default function ChooseRestaurantScreen() {
 
   return (
     <SafeAreaView style={styles.safeArea}>
-      <StatusBar barStyle="dark-content" backgroundColor={COLORS.backgroundLight} />
-      {isLoading ? <LoadingScreen /> : null}
+      <StatusBar barStyle="dark-content" backgroundColor="#FFFFFF" />
+      <LoadingScreen visible={isLoading} />
       {/* List */}
       <FlatList
         data={business}

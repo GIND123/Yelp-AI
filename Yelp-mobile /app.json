@@ -1,7 +1,7 @@
 {
   "expo": {
-    "name": "Yelp-mobile ",
-    "slug": "Yelp-mobile ",
+    "name": "WTF",
+    "slug": "WTF",
     "version": "1.0.0",
     "web": {
       "favicon": "./assets/favicon.png"
@@ -24,12 +24,11 @@
       ]
     ],
     "orientation": "portrait",
-    "icon": "./assets/icon.png",
-    "userInterfaceStyle": "light",
+    "icon": "./assets/logo2.png",
     "splash": {
-      "image": "./assets/splash.png",
+      "image": "./assets/logo2.png",
       "resizeMode": "contain",
-      "backgroundColor": "#ffffff"
+      "backgroundColor": "#D1252A"
     },
     "assetBundlePatterns": ["**/*"],
     "ios": {

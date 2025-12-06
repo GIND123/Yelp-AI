@@ -7,7 +7,6 @@ import {
   TouchableOpacity,
   ScrollView,
   SafeAreaView,
-  StyleSheet,
   StatusBar,
   Platform,
   Alert,
@@ -32,6 +31,13 @@ export default function ScheduleOrderScreen({ route }) {
 
   const { isLoading, setIsLoading, setBusiness } = useContext(AppContext);
 
+  React.useEffect(() => {
+    navigation.setOptions({
+      gestureEnabled: !isLoading,
+      headerBackVisible: !isLoading,
+    });
+  }, [isLoading, navigation]);
+
   const onChangeCity = (text) => {
     setLocation({
       ...location,
@@ -39,12 +45,11 @@ export default function ScheduleOrderScreen({ route }) {
     });
   };
 
-  // Updated onChange to handle Platform logic
   const onChange = (event, selectedDate) => {
     const currentDate = selectedDate || date;
+    console.log(currentDate);
     setDate(currentDate);
 
-    // Only close the modals automatically on Android
     if (Platform.OS === 'android') {
       setShowDate(false);
       setShowTime(false);
@@ -53,43 +58,92 @@ export default function ScheduleOrderScreen({ route }) {
 
   async function getCurrentLocation() {
     setIsLoading(true);
-    let { status } = await Location.requestForegroundPermissionsAsync();
-    if (status !== 'granted') {
-      return;
-    }
 
     try {
-      let currentLocation = await Location.getCurrentPositionAsync({
-        accuracy: Location.Accuracy.Balanced,
-        timeout: 5000,
-      });
-      let addressResponse = await Location.reverseGeocodeAsync({
-        latitude: currentLocation.coords.latitude,
-        longitude: currentLocation.coords.longitude,
-      });
+      let { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('Permission Denied', 'Location permission is required to use this feature.');
+        setIsLoading(false);
+        return;
+      }
 
-      setLocation((current) => ({
-        ...current,
+      let currentLocation = null;
+
+      if (Platform.OS === 'android') {
+        const lastKnown = await Location.getLastKnownPositionAsync();
+        if (lastKnown) {
+          currentLocation = lastKnown;
+        }
+      }
+
+      if (!currentLocation) {
+        const locationOptions = {
+          accuracy: Platform.OS === 'android' ? Location.Accuracy.Lowest : Location.Accuracy.Low,
+          maximumAge: 60000,
+          timeout: Platform.OS === 'android' ? 8000 : 5000,
+        };
+
+        try {
+          currentLocation = await Location.getCurrentPositionAsync(locationOptions);
+        } catch {
+          const lastKnown = await Location.getLastKnownPositionAsync();
+          if (lastKnown) {
+            currentLocation = lastKnown;
+          } else {
+            throw new Error('Unable to get location. Please ensure location services are enabled.');
+          }
+        }
+      }
+
+      // Set coordinates immediately (don't wait for city lookup)
+      setLocation({
         latitude: currentLocation.coords.latitude.toString(),
         longitude: currentLocation.coords.longitude.toString(),
-        city: addressResponse[0].city,
-      }));
-    } catch {
-      let lastKnown = await Location.getLastKnownPositionAsync();
-      if (lastKnown) {
-        setLocation((current) => ({
-          ...current,
-          latitude: lastKnown.coords.latitude.toString(),
-          longitude: lastKnown.coords.longitude.toString(),
-        }));
-      } else {
-      }
-    } finally {
+        city: 'Loading...',
+      });
+
+      // Get city name in background (don't block the UI)
+      Location.reverseGeocodeAsync({
+        latitude: currentLocation.coords.latitude,
+        longitude: currentLocation.coords.longitude,
+      })
+        .then((addressResponse) => {
+          if (addressResponse && addressResponse.length > 0) {
+            const cityName =
+              addressResponse[0].city ||
+              addressResponse[0].subregion ||
+              addressResponse[0].region ||
+              '';
+            setLocation((prev) => ({
+              ...prev,
+              city: cityName,
+            }));
+          } else {
+            setLocation((prev) => ({
+              ...prev,
+              city: '',
+            }));
+          }
+        })
+        .catch((error) => {
+          console.log('Reverse geocoding failed:', error);
+          setLocation((prev) => ({
+            ...prev,
+            city: '',
+          }));
+        });
+
+      setIsLoading(false);
+    } catch (error) {
+      console.error('Location error:', error);
+      Alert.alert(
+        'Location Error',
+        error.message || 'Unable to get your location. Please enter your city manually.'
+      );
       setIsLoading(false);
     }
   }
   const { description, image } = route.params;
-
   async function onConfirmAndProceed() {
     // Validation
     if (location.city.length === 0) {
@@ -98,10 +152,7 @@ export default function ScheduleOrderScreen({ route }) {
     }
 
     setIsLoading(true);
-
     try {
-      // 1. Call the service
-      // If this fails (e.g. 400, 500), it will jump straight to 'catch'
       let res = await SearchImage(
         image,
         description,
@@ -118,8 +169,8 @@ export default function ScheduleOrderScreen({ route }) {
         return;
       }
 
-      setBusiness(res.businesses);
-      navigation.navigate('ChooseRestaurant');
+      setBusiness(res?.businesses);
+      if (res?.businesses) navigation.navigate('ChooseRestaurant');
     } catch (err) {
       console.error('Search failed:', err);
 
@@ -134,7 +185,7 @@ export default function ScheduleOrderScreen({ route }) {
     <SafeAreaView style={styles.safeArea}>
       <StatusBar barStyle="dark-content" backgroundColor={COLORS.backgroundLight} />
 
-      {isLoading ? <LoadingScreen /> : null}
+      <LoadingScreen visible={isLoading} />
 
       <ScrollView contentContainerStyle={styles.scrollContent}>
         <View style={styles.sectionContainer}>
@@ -254,7 +305,7 @@ export default function ScheduleOrderScreen({ route }) {
       <View style={styles.bottomFixedFooter}>
         <TouchableOpacity
           style={[styles.btnBase, styles.btnPrimary]}
-          onPress={() => onConfirmAndProceed(description, '', '', date, date)}>
+          onPress={() => onConfirmAndProceed()}>
           <Text style={styles.btnTextPrimary}>Confirm & Proceed</Text>
           <MaterialIcons name="arrow-forward" size={24} color="#FFF" />
         </TouchableOpacity>
