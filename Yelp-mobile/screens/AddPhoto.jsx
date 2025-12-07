@@ -9,6 +9,7 @@ import {
   Platform,
   Alert,
   Image,
+  ScrollView,
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { styles } from '../styles/styles';
@@ -83,7 +84,7 @@ export default function AddPhoto() {
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         style={{ flex: 1 }}>
         <View style={styles.container}>
-          <View showsVerticalScrollIndicator={false}>
+          <ScrollView showsVerticalScrollIndicator={false}>
             {/* Dashed Placeholder */}
             {!image ? (
               <View style={styles.uploadPlaceholder}>
@@ -128,10 +129,10 @@ export default function AddPhoto() {
                 onChangeText={setDescription}
               />
             </View>
-          </View>
+          </ScrollView>
 
           {/* Footer */}
-          <View style={styles.footer}>
+          <View>
             <CustomButton title="Next" variant="primary" onPress={() => onPressNext()} />
           </View>
         </View>
