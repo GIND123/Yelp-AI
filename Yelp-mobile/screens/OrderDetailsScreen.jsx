@@ -155,7 +155,7 @@ export default function ScheduleOrderScreen({ route }) {
     try {
       let res = await SearchImage(
         image,
-        description,
+        description || 'Look at the image data and find a restaurant that serves this item',
         location?.city || '',
         location?.latitude || '',
         location?.longitude || '',
