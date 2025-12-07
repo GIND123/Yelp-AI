@@ -25,9 +25,20 @@ export default function ChooseRestaurantScreen() {
   async function onConfirmRestaurant() {
     try {
       let selectedBusiness = business?.filter((item) => item.id === selectedId);
+
+      if (!selectedBusiness || selectedBusiness.length === 0) {
+        Alert.alert('Error', 'No business data available. Please try again.');
+        return;
+      }
+
       setIsLoading(true);
-      const details = await getRestaurantDetails(selectedBusiness[0].yelp_url);
+      const details = await getRestaurantDetails(selectedBusiness[0]?.yelp_url);
       setIsLoading(false);
+
+      if (!details) {
+        Alert.alert('Error', 'Failed to load restaurant details. Please try again.');
+        return;
+      }
 
       navigation.navigate('RestaurantSummaryScreen', {
         data: selectedBusiness,
@@ -38,6 +49,7 @@ export default function ChooseRestaurantScreen() {
       console.error('Failed to get restaurant details:', error);
       // Show error to user
       Alert.alert('Error', 'Failed to load restaurant details. Please try again.');
+      return;
     }
   }
 
@@ -67,10 +79,7 @@ export default function ChooseRestaurantScreen() {
         {/* Middle: Info */}
         <View style={{ flex: 1 }}>
           <Text
-            style={[
-              styles.restaurantName,
-              isSelected && { color: COLORS.primary },
-            ]}
+            style={[styles.restaurantName, isSelected && { color: COLORS.primary }]}
             numberOfLines={1}>
             {item.name}
           </Text>

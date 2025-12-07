@@ -3,6 +3,7 @@ import { throwErrorAlert } from '../utils/alert';
 
 export async function Test() {
   let res = await FetchWrapper(`${process.env.EXPO_PUBLIC_API_URL_PIPELINE_1}/health`);
+  console.log(res);
 }
 
 export async function SearchImage(image, user_query, location, Latitude, Longitude, date, time) {

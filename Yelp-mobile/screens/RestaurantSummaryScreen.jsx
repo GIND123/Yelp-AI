@@ -10,7 +10,6 @@ import {
   StatusBar,
   Alert,
   Linking,
-  Dimensions,
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 
@@ -19,8 +18,6 @@ import { styles, COLORS } from '../styles/styles';
 
 export default function RestaurantSummaryScreen({ route }) {
   const { data, details } = route.params;
-  const screenHeight = Dimensions.get('window').height;
-  const isSmallScreen = screenHeight < 700;
 
   async function onOpenPhone() {
     const phoneNumber = 'tel:+122378343';
@@ -147,9 +144,7 @@ export default function RestaurantSummaryScreen({ route }) {
       {/* Fixed Footer */}
       <View style={styles.bottomFixedFooter}>
         {/* Order Button using shared styles.btnPrimary (Primary Color) */}
-        <TouchableOpacity 
-          style={[styles.btnPrimary, isSmallScreen && { marginHorizontal: 12 }]} 
-          onPress={handleOrderNow}>
+        <TouchableOpacity style={styles.btnPrimary} onPress={handleOrderNow}>
           <Text style={styles.btnTextPrimary}>Order Now</Text>
         </TouchableOpacity>
       </View>
