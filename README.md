@@ -160,10 +160,6 @@ The video covers:
 
 ---
 
-## Repository
-
-📂 Full public source code:  
-👉 *https://github.com/your-username/WTF-WhereIsTheFood*
 
 Includes:
 - Mobile frontend
