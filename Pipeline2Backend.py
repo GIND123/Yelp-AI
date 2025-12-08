@@ -158,7 +158,7 @@ def run_agent(system_prompt: str, content: str) -> str:
         )
     except TypeError:
         resp = llm_client.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-2.0-flash-lite",
             contents=[system_prompt, content],
         )
 
@@ -498,3 +498,4 @@ if __name__ == "__main__":
         host="0.0.0.0",
         port=int(os.environ.get("PORT", "8000")),
     )
+
