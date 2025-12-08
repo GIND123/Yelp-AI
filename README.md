@@ -87,3 +87,103 @@ This keeps the system aligned strictly with its intended use case.
 
 ## System Architecture
 
+
+---
+
+## Backend Pipelines
+
+### 🔹 Pipeline 1 – Image to Yelp Discovery
+- Accepts uploaded images or text captions.
+- Uses **Gemini multimodal generation** to produce a single precise Yelp query sentence.
+- Queries **Yelp AI Chat Endpoint** to retrieve businesses.
+- Normalizes:
+  - Ratings
+  - Review counts
+  - Photos
+  - Hours
+  - Booking availability
+- Sorts by rating + popularity.
+
+> Implemented in: `Pipeline1Backend.py` :contentReference[oaicite:1]{index=1}
+
+---
+
+### 🔹 Pipeline 2 – Multi-Agent Verdict System
+
+For a selected Yelp business:
+1. Fetch business details and real reviews using **Yelp Fusion API**.
+2. If reviews are unavailable, fallback to **Yelp AI summary extraction**.
+3. Run the **Optimist, Critic, and Judge agents** using Gemini.
+4. Produce the final actionable verdict.
+
+> Implemented in: `Pipeline2Backend.py` :contentReference[oaicite:2]{index=2}
+
+---
+
+## Compliance with Hackathon Rules
+
+✅ **Primary Data Source:** Yelp AI API  
+✅ **No Third-Party Location Data Mix**  
+✅ **Original Work Created During Submission Period**  
+✅ **Fully Functional End-to-End Flow**  
+✅ **Public Repository with Setup Instructions**  
+✅ **Hosted Build for Testing**  
+✅ **3-Minute Demo Video Included**
+
+---
+
+## Live App Builds
+
+- **Android APK:**  
+  👉 *https://your-hosted-apk-link.com*
+
+- **TestFlight (iOS):**  
+  👉 *https://your-testflight-link.com*
+
+*(Replace links with your hosted URLs.)*
+
+---
+
+## Demonstration Video
+
+🎥 Watch full demo (≈3 minutes):  
+👉 *https://youtube.com/your-demo-video*
+
+The video covers:
+- Image upload
+- Time/location selection
+- AI processing
+- Yelp AI discovery flow
+- Restaurant ranking
+- Multi-agent verdict
+- Booking/calling actions
+
+---
+
+## Repository
+
+📂 Full public source code:  
+👉 *https://github.com/your-username/WTF-WhereIsTheFood*
+
+Includes:
+- Mobile frontend
+- Backend pipelines
+- Environment configuration
+- API setup instructions
+
+---
+
+## Setup Instructions (Local)
+
+### Requirements
+- Python 3.10+
+- Gemini API Key (Google)
+- Yelp API Key + Yelp AI access
+
+---
+
+### Backend Setup
+
+```bash
+git clone [https://github.com/your-username/WTF-WhereIsTheFood.git](https://github.com/GIND123/WTF/tree/main/Yelp-mobile)
+pip install -r requirements.txt
