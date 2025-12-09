@@ -201,7 +201,7 @@ For a selected Yelp business:
 ## Live App Builds
 
 - **Android APK:**  
-  👉 *https://your-hosted-apk-link.com*
+  👉 *[https://your-hosted-apk-link.com](https://expo.dev/accounts/rohithknair/projects/WTF/builds/16bd6259-00ad-4977-a6ca-5f413f3e06d0)*
 
 ---
 
@@ -216,7 +216,7 @@ For a selected Yelp business:
 ## Demonstration Video
 
 🎥 Watch full demo (≈3 minutes):  
-👉 *https://youtube.com/your-demo-video*
+👉 *[https://youtube.com/your-demo-video](https://www.youtube.com/shorts/n8fyWitdWKs)*
 
 The video covers:
 - Image upload
